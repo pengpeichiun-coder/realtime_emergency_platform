@@ -1,0 +1,3 @@
+# The E2E runner streams its one-shot receiver into the worker with `docker
+# compose exec`; this overlay intentionally adds no source mounts.
+services: {}

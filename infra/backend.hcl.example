@@ -1,0 +1,6 @@
+# Copy to ignored backend.hcl; use an existing approved state bucket.
+bucket = "REPLACE-WITH-OWNED-STATE-BUCKET"
+key = "emergency-platform/production.tfstate"
+region = "ap-southeast-1"
+encrypt = true
+use_lockfile = true

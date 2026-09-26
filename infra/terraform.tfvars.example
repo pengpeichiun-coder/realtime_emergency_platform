@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (ignored) and replace all placeholders with owned values.
+# Applying this creates BILLABLE resources. Do not apply without explicit approval.
+region = "ap-southeast-1"
+name = "emergency-platform"
+domain_name = "REPLACE-WITH-OWNED-DOMAIN"
+certificate_arn = "REPLACE-WITH-VALIDATED-ACM-ARN-IN-REGION"
+github_repository = "REPLACE-OWNER/REPLACE-REPOSITORY"
+image_tag = "sha-REPLACE-WITH-REVIEWED-40-CHARACTER-COMMIT"
+api_desired_count = 2
+# If this account already has GitHub OIDC, reuse it instead of creating a duplicate.
+# github_oidc_provider_arn = "arn:aws:iam::ACCOUNT:oidc-provider/token.actions.githubusercontent.com"

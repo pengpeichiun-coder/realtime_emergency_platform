@@ -1,0 +1,107 @@
+groups:
+  - name: emergency-platform
+    interval: 30s
+    rules:
+      - alert: EmergencyAPIScrapeUnavailable
+        expr: min by (cluster, job) (up{job="emergency-api"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: emergency-platform
+        annotations:
+          summary: An API metrics target is unavailable
+          description: Check API process, database reachability and the metrics bearer credential; scrape failure alone does not identify the cause.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#api-availability-and-http-errors
+      - alert: EmergencyAPIReadinessFailure
+        expr: sum by (cluster, job) (rate(http_requests_total{job="emergency-api",route="/health/ready",status="503"}[2m])) > 0
+        for: 3m
+        labels:
+          severity: critical
+          service: emergency-platform
+        annotations:
+          summary: API dependency readiness checks keep failing
+          description: Repeated readiness failures indicate database, Redis or realtime subscription trouble; check dependency health before restarting services.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#api-availability-and-http-errors
+      - alert: EmergencyAPIHigh5xxRate
+        expr: |
+          (
+            sum by (cluster, job) (rate(http_requests_total{job="emergency-api",route=~"/api/.*",status=~"5.."}[5m]))
+            / sum by (cluster, job) (rate(http_requests_total{job="emergency-api",route=~"/api/.*"}[5m]))
+          ) > 0.05
+          and sum by (cluster, job) (increase(http_requests_total{job="emergency-api",route=~"/api/.*"}[5m])) >= 20
+        for: 5m
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: API commands have a sustained elevated server error ratio
+          description: More than five percent 5xx with at least twenty API requests per five minutes; inspect safe correlated logs and dependency readiness.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#api-availability-and-http-errors
+      - alert: EmergencyRedisRateLimitDegraded
+        expr: sum by (cluster, job) (rate(auth_rate_limit_fallback_total{job="emergency-api"}[2m])) > 0
+        for: 3m
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: Authentication protection repeatedly falls back to local limits
+          description: Redis-backed shared limits are degraded; local limits still apply but are weaker across API replicas.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#redis-unavailable
+      - alert: EmergencyBackgroundJobFailures
+        # Retained DB state is a gauge shared by API replicas, not a counter.
+        expr: max by (cluster, job, job_type) (background_jobs{job="emergency-api",status="FAILED"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: Background jobs remain failed
+          description: Review persisted report or AI job errors and correct the cause before an audited ADMIN retry; this is retained failure state, not a failure rate.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#celery-backlog-or-worker-unavailable
+      - alert: EmergencyWebhookDeliveryFailures
+        expr: max by (cluster, job) (webhook_deliveries{job="emergency-api",status="FAILED"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: Webhook deliveries remain failed
+          description: Review terminal delivery errors and receiver configuration before an audited ADMIN retry; replicas expose the same retained delivery records.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#outbound-webhook-failure
+      - alert: EmergencyBackgroundJobQueueStalled
+        expr: max by (cluster, job) (background_job_oldest_pending_age_seconds{job="emergency-api"}) > 300
+        for: 2m
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: Actionable background jobs remain overdue
+          description: A queued or running job has been due for over five minutes; inspect worker, publisher and broker health before retrying business operations.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#celery-backlog-or-worker-unavailable
+      - alert: EmergencyOutboxBacklogStalled
+        expr: max by (cluster, job) (outbox_oldest_pending_age_seconds{job="emergency-api"}) > 60
+        for: 2m
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: Durable outbox events are waiting for publication
+          description: Events have waited over a minute to become delivery records; inspect publisher health and database access. This does not measure receiver HTTP latency.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#publisher-and-outbox-recovery
+      - alert: EmergencyOutboxPublisherUnavailable
+        # Gate each target on its own Redis observation before replica aggregation.
+        expr: |
+          max by (cluster, job) (
+            (
+              (outbox_publisher_heartbeat_age_seconds{job="emergency-api"} > bool 30)
+              + (outbox_publisher_heartbeat_present{job="emergency-api"} == bool 0)
+            ) * (publisher_redis_available{job="emergency-api"} == bool 1)
+          ) > 0
+        for: 2m
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: Publisher has no recent successful cycle while Redis is reachable
+          description: Heartbeat is missing or older than thirty seconds; inspect publisher process and safe logs. Redis outages are covered by readiness and degradation alerts.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#publisher-and-outbox-recovery

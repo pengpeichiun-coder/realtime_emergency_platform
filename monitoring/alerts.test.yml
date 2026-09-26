@@ -1,0 +1,217 @@
+rule_files: [alerts.yml]
+evaluation_interval: 30s
+tests:
+  - name: Healthy dependencies and business outcomes do not fire
+    interval: 30s
+    input_series:
+      - series: 'up{cluster="test",job="emergency-api",instance="api-a"}'
+        values: '1x40'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/health/ready",status="200"}'
+        values: '0+3x40'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/api/incidents",status="200"}'
+        values: '0+10x40'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/api/incidents",status="500"}'
+        values: '0x40'
+      - series: 'auth_rate_limit_fallback_total{cluster="test",job="emergency-api"}'
+        values: '0x40'
+      - series: 'background_jobs{cluster="test",job="emergency-api",job_type="INCIDENT_REPORT",status="SUCCEEDED"}'
+        values: '10x40'
+      - series: 'webhook_deliveries{cluster="test",job="emergency-api",status="DELIVERED"}'
+        values: '10x40'
+    promql_expr_test:
+      - expr: 'ALERTS{alertstate="firing"}'
+        eval_time: 20m
+        exp_samples: []
+  - name: Sustained failures fire after their hold periods and recover
+    interval: 30s
+    input_series:
+      - series: 'up{cluster="test",job="emergency-api",instance="api-a"}'
+        values: '0x20 1x20'
+      - series: 'up{cluster="test",job="emergency-api",instance="api-b"}'
+        values: '1x41'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/health/ready",status="503"}'
+        values: '0+3x20 60x20'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/api/incidents",status="200"}'
+        values: '0+9x41'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/api/incidents",status="500"}'
+        values: '0+1x20 20x20'
+      - series: 'auth_rate_limit_fallback_total{cluster="test",job="emergency-api"}'
+        values: '0+1x20 20x20'
+      - series: 'background_jobs{cluster="test",job="emergency-api",instance="api-a",job_type="INCIDENT_SUMMARY",status="FAILED"}'
+        values: '1x20 0x20'
+      - series: 'background_jobs{cluster="test",job="emergency-api",instance="api-b",job_type="INCIDENT_SUMMARY",status="FAILED"}'
+        values: '1x20 0x20'
+      - series: 'webhook_deliveries{cluster="test",job="emergency-api",instance="api-a",status="FAILED"}'
+        values: '1x20 0x20'
+      - series: 'webhook_deliveries{cluster="test",job="emergency-api",instance="api-b",status="FAILED"}'
+        values: '1x20 0x20'
+    promql_expr_test:
+      - expr: 'ALERTS{alertstate="firing"}'
+        eval_time: 1m
+        exp_samples: []
+      - expr: 'ALERTS{alertstate="firing"}'
+        eval_time: 10m
+        exp_samples:
+          - labels: 'ALERTS{alertname="EmergencyAPIScrapeUnavailable",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="critical"}'
+            value: 1
+          - labels: 'ALERTS{alertname="EmergencyAPIReadinessFailure",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="critical"}'
+            value: 1
+          - labels: 'ALERTS{alertname="EmergencyAPIHigh5xxRate",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="warning"}'
+            value: 1
+          - labels: 'ALERTS{alertname="EmergencyRedisRateLimitDegraded",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="warning"}'
+            value: 1
+          - labels: 'ALERTS{alertname="EmergencyBackgroundJobFailures",alertstate="firing",cluster="test",job="emergency-api",job_type="INCIDENT_SUMMARY",service="emergency-platform",severity="warning"}'
+            value: 1
+          - labels: 'ALERTS{alertname="EmergencyWebhookDeliveryFailures",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="warning"}'
+            value: 1
+      - expr: 'ALERTS{alertstate="firing"}'
+        eval_time: 20m
+        exp_samples: []
+      - expr: 'max by (cluster, job, job_type) (background_jobs{job="emergency-api",status="FAILED"})'
+        eval_time: 10m
+        exp_samples:
+          - labels: '{cluster="test",job="emergency-api",job_type="INCIDENT_SUMMARY"}'
+            value: 1
+  - name: Short failures clear before the for duration
+    interval: 30s
+    input_series:
+      - series: 'up{cluster="test",job="emergency-api"}'
+        values: '1 0 1x40'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/health/ready",status="503"}'
+        values: '0 1x41'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/api/incidents",status="200"}'
+        values: '0+10x42'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/api/incidents",status="500"}'
+        values: '0 2x41'
+      - series: 'auth_rate_limit_fallback_total{cluster="test",job="emergency-api"}'
+        values: '0 1x41'
+      - series: 'background_jobs{cluster="test",job="emergency-api",job_type="INCIDENT_REPORT",status="FAILED"}'
+        values: '0 1 0x40'
+      - series: 'webhook_deliveries{cluster="test",job="emergency-api",status="FAILED"}'
+        values: '0 1 0x40'
+    promql_expr_test:
+      # max_over_time checks the entire timeline, not just a recovered endpoint.
+      - expr: 'max_over_time(ALERTS{alertstate="firing"}[20m])'
+        eval_time: 20m
+        exp_samples: []
+  - name: Very low traffic and health probe errors do not create an API ratio alert
+    interval: 30s
+    input_series:
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/api/incidents",status="500"}'
+        values: '0+0.1x40'
+      - series: 'http_requests_total{cluster="test",job="emergency-api",route="/metrics",status="503"}'
+        values: '0+20x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: EmergencyAPIHigh5xxRate
+        exp_alerts: []
+  - name: Healthy queue and publisher telemetry
+    interval: 30s
+    input_series:
+    - series: background_job_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: '0x20'
+    - series: outbox_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: '0x20'
+    - series: outbox_publisher_heartbeat_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x20
+    - series: outbox_publisher_heartbeat_present{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x20
+    - series: publisher_redis_available{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x20
+    promql_expr_test:
+    - expr: ALERTS{alertstate="firing"}
+      eval_time: 10m
+      exp_samples: []
+  - name: Sustained queue outbox and publisher stalls deduplicate replicas and recover
+    interval: 30s
+    input_series:
+    - series: background_job_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 360x8 0x12
+    - series: outbox_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 90x8 0x12
+    - series: outbox_publisher_heartbeat_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 40x8 1x12
+    - series: outbox_publisher_heartbeat_present{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x21
+    - series: publisher_redis_available{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x21
+    - series: background_job_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-b"}
+      values: 360x8 0x12
+    - series: outbox_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-b"}
+      values: 90x8 0x12
+    - series: outbox_publisher_heartbeat_age_seconds{cluster="test",job="emergency-api",instance="api-b"}
+      values: 40x8 1x12
+    - series: outbox_publisher_heartbeat_present{cluster="test",job="emergency-api",instance="api-b"}
+      values: 1x21
+    - series: publisher_redis_available{cluster="test",job="emergency-api",instance="api-b"}
+      values: 1x21
+    promql_expr_test:
+    - expr: ALERTS{alertstate="firing"}
+      eval_time: 1m
+      exp_samples: []
+    - expr: ALERTS{alertstate="firing"}
+      eval_time: 3m
+      exp_samples:
+      - labels: ALERTS{alertname="EmergencyBackgroundJobQueueStalled",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="warning"}
+        value: 1
+      - labels: ALERTS{alertname="EmergencyOutboxBacklogStalled",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="warning"}
+        value: 1
+      - labels: ALERTS{alertname="EmergencyOutboxPublisherUnavailable",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="warning"}
+        value: 1
+    - expr: ALERTS{alertstate="firing"}
+      eval_time: 10m
+      exp_samples: []
+  - name: Short queue outbox and publisher spikes do not fire
+    interval: 30s
+    input_series:
+    - series: background_job_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 0 360x1 0x18
+    - series: outbox_oldest_pending_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 0 90x1 0x18
+    - series: outbox_publisher_heartbeat_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 0 40x1 0x18
+    - series: outbox_publisher_heartbeat_present{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x22
+    - series: publisher_redis_available{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x22
+    promql_expr_test:
+    - expr: max_over_time(ALERTS{alertstate="firing"}[10m])
+      eval_time: 10m
+      exp_samples: []
+  - name: Missing heartbeat with reachable Redis fires
+    interval: 30s
+    input_series:
+    - series: outbox_publisher_heartbeat_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: '0x20'
+    - series: outbox_publisher_heartbeat_present{cluster="test",job="emergency-api",instance="api-a"}
+      values: '0x20'
+    - series: publisher_redis_available{cluster="test",job="emergency-api",instance="api-a"}
+      values: 1x20
+    promql_expr_test:
+    - expr: ALERTS{alertstate="firing"}
+      eval_time: 1m
+      exp_samples: []
+    - expr: ALERTS{alertstate="firing"}
+      eval_time: 3m
+      exp_samples:
+      - labels: ALERTS{alertname="EmergencyOutboxPublisherUnavailable",alertstate="firing",cluster="test",job="emergency-api",service="emergency-platform",severity="warning"}
+        value: 1
+  - name: Redis outage is not classified as publisher death even with a healthy second API
+    interval: 30s
+    input_series:
+    - series: outbox_publisher_heartbeat_age_seconds{cluster="test",job="emergency-api",instance="api-a"}
+      values: 100x20
+    - series: outbox_publisher_heartbeat_present{cluster="test",job="emergency-api",instance="api-a"}
+      values: '0x20'
+    - series: publisher_redis_available{cluster="test",job="emergency-api",instance="api-a"}
+      values: '0x20'
+    - series: outbox_publisher_heartbeat_age_seconds{cluster="test",job="emergency-api",instance="api-b"}
+      values: 1x20
+    - series: outbox_publisher_heartbeat_present{cluster="test",job="emergency-api",instance="api-b"}
+      values: 1x20
+    - series: publisher_redis_available{cluster="test",job="emergency-api",instance="api-b"}
+      values: 1x20
+    promql_expr_test:
+    - expr: ALERTS{alertstate="firing"}
+      eval_time: 10m
+      exp_samples: []

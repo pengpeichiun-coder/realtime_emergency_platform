@@ -1,0 +1,21 @@
+# Test-only timing. The ordinary profile always loads alerts.yml instead.
+groups:
+  - name: publisher-rehearsal
+    interval: 2s
+    rules:
+      - alert: EmergencyOutboxPublisherUnavailable
+        expr: |
+          max by (cluster, job) (
+            (
+              (outbox_publisher_heartbeat_age_seconds{job="emergency-api"} > bool 10)
+              + (outbox_publisher_heartbeat_present{job="emergency-api"} == bool 0)
+            ) * (publisher_redis_available{job="emergency-api"} == bool 1)
+          ) > 0
+        for: 10s
+        labels:
+          severity: warning
+          service: emergency-platform
+        annotations:
+          summary: Local rehearsal publisher heartbeat is stale
+          description: Test-only shortened threshold; no production receiver is configured.
+          runbook_url: https://github.com/pengpeichiun-coder/realtime_emergency_platform/blob/main/docs/operations.md#publisher-and-outbox-recovery

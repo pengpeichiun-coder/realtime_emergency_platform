@@ -1,0 +1,76 @@
+# Optional local-only topology. Use with compose.yaml and --profile monitoring.
+services:
+  api:
+    environment:
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-127.0.0.1,localhost,testserver},api,api2
+  api2:
+    profiles: [distributed, monitoring]
+    environment:
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-127.0.0.1,localhost,testserver},api,api2
+  monitoring-token:
+    image: emergency-platform-backend:local
+    build: ./backend
+    profiles: [monitoring]
+    user: '0:0'
+    restart: 'no'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      METRICS_TOKEN: ${METRICS_TOKEN:?Run make env before starting monitoring}
+    entrypoint: [python, -c]
+    command:
+      - >-
+        import os; from pathlib import Path;
+        token = os.environ['METRICS_TOKEN']; assert token;
+        path = Path('/run/monitoring/metrics_token');
+        path.write_text(token); path.chmod(0o444)
+    volumes: [monitoring-credentials:/run/monitoring]
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: [--config.file=/etc/prometheus/prometheus.yml, --storage.tsdb.path=/prometheus, --storage.tsdb.retention.time=1d]
+    ports: ['127.0.0.1:${PROMETHEUS_PORT:-9090}:9090']
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - monitoring-credentials:/run/monitoring:ro
+      - monitoring-prometheus-data:/prometheus
+    depends_on:
+      monitoring-token: {condition: service_completed_successfully}
+      api: {condition: service_healthy}
+      api2: {condition: service_healthy}
+      alertmanager: {condition: service_started}
+  alertmanager:
+    image: prom/alertmanager:v0.34.1
+    profiles: [monitoring]
+    restart: unless-stopped
+    command: [--config.file=/etc/alertmanager/alertmanager.yml, --storage.path=/alertmanager, --cluster.listen-address=]
+    ports: ['127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093']
+    volumes:
+      - ./monitoring/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - monitoring-alertmanager-data:/alertmanager
+    depends_on:
+      alert-receiver: {condition: service_healthy}
+  alert-receiver:
+    image: emergency-platform-backend:local
+    build: ./backend
+    profiles: [monitoring]
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    entrypoint: [python, -u, /opt/monitoring/alert_receiver.py]
+    ports: ['127.0.0.1:${ALERT_RECEIVER_PORT:-9095}:8080']
+    volumes: ['./scripts/alert_receiver.py:/opt/monitoring/alert_receiver.py:ro']
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8080/health", timeout=2)']
+      interval: 10s
+      timeout: 5s
+      start_period: 20s
+      retries: 10
+volumes:
+  monitoring-credentials:
+  monitoring-prometheus-data:
+  monitoring-alertmanager-data:

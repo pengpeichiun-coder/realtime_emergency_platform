@@ -1,0 +1,118 @@
+name: emergency-platform
+x-backend: &backend
+  image: emergency-platform-backend:local
+  build: ./backend
+  init: true
+  restart: unless-stopped
+  stop_grace_period: 35s
+  environment: &environment
+    LOG_FORMAT: ${LOG_FORMAT:-json}
+    METRICS_TOKEN: ${METRICS_TOKEN:-}
+    APP_ENV: ${APP_ENV:-development}
+    ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://127.0.0.1:8080,http://localhost:8080}
+    ALLOWED_HOSTS: ${ALLOWED_HOSTS:-127.0.0.1,localhost,testserver}
+    TRUSTED_PROXY_CIDRS: ${TRUSTED_PROXY_CIDRS:-}
+    ENABLE_HSTS: ${ENABLE_HSTS:-false}
+    DATABASE_URL: postgresql+asyncpg://emergency_app:${RUNTIME_DATABASE_PASSWORD:?Run scripts/init_local_env.py}@postgres/emergency_platform
+    REDIS_URL: redis://redis:6379/0
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CELERY_RESULT_BACKEND: redis://redis:6379/1
+    JWT_SECRET: ${JWT_SECRET:?Run scripts/init_local_env.py}
+    WEBHOOK_ENCRYPTION_KEY: ${WEBHOOK_ENCRYPTION_KEY:?Run scripts/init_local_env.py}
+    WEBHOOK_ALLOWED_LOOPBACK_ORIGINS: ${WEBHOOK_ALLOWED_LOOPBACK_ORIGINS:-}
+    LLM_PROVIDER: ${LLM_PROVIDER:-fake}
+    LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+    OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  depends_on:
+    migrate: {condition: service_completed_successfully}
+    redis: {condition: service_healthy}
+services:
+  postgres:
+    image: emergency-platform-postgis:local
+    build: ./infra/postgis
+    platform: linux/amd64
+    environment:
+      POSTGRES_DB: emergency_platform
+      POSTGRES_USER: emergency
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Run scripts/init_local_env.py}
+    volumes: [postgres-data:/var/lib/postgresql/data]
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -h 127.0.0.1 -U emergency -d emergency_platform']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  redis:
+    image: redis:8.2-alpine
+    command: [redis-server, --save, '', --appendonly, 'no']
+    restart: unless-stopped
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    <<: *backend
+    restart: 'no'
+    command: [alembic, upgrade, head]
+    environment:
+      <<: *environment
+      DATABASE_URL: postgresql+asyncpg://emergency_migrator:${MIGRATION_DATABASE_PASSWORD:?Run scripts/init_local_env.py}@postgres/emergency_platform
+    depends_on:
+      db-roles: {condition: service_completed_successfully}
+  db-roles:
+    image: emergency-platform-backend:local
+    build: ./backend
+    init: true
+    restart: 'no'
+    command: [python, -m, app.scripts.bootstrap_database, --initialize-role]
+    environment:
+      APP_ENV: development
+      BOOTSTRAP_DATABASE_URL: postgresql+asyncpg://emergency:${POSTGRES_PASSWORD:?Run scripts/init_local_env.py}@postgres/emergency_platform
+      DATABASE_URL: postgresql+asyncpg://emergency_app:${RUNTIME_DATABASE_PASSWORD:?Run scripts/init_local_env.py}@postgres/emergency_platform
+      MIGRATION_DATABASE_URL: postgresql+asyncpg://emergency_migrator:${MIGRATION_DATABASE_PASSWORD:?Run scripts/init_local_env.py}@postgres/emergency_platform
+    depends_on:
+      postgres: {condition: service_healthy}
+  api:
+    <<: *backend
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, '8000', --no-proxy-headers]
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8000/health/ready", timeout=3)']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  api2:
+    <<: *backend
+    profiles: [distributed]
+    command: [uvicorn, app.main:app, --host, 0.0.0.0, --port, '8000', --no-proxy-headers]
+    ports: ['127.0.0.1:${API2_PORT:-8002}:8000']
+    healthcheck:
+      test: [CMD, python, -c, 'import urllib.request; urllib.request.urlopen("http://localhost:8000/health/ready", timeout=3)']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+  worker:
+    <<: *backend
+    command: [celery, -A, app.workers.celery_app:celery_app, worker, --concurrency=2, --loglevel=INFO]
+  publisher:
+    <<: *backend
+    command: [python, -m, app.workers.publisher]
+  frontend:
+    image: emergency-platform-frontend:local
+    build: ./frontend
+    ports: ['127.0.0.1:${HTTP_PORT:-8080}:8080']
+    restart: unless-stopped
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -q, --spider, 'http://127.0.0.1:8080/health']
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  seed:
+    <<: *backend
+    profiles: [tools]
+    restart: 'no'
+    command: [python, -m, app.scripts.seed_demo]
+volumes:
+  postgres-data:

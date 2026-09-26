@@ -1,0 +1,67 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100/
+.Trashes/
+
+# Node.js and build output
+node_modules/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+*.log
+/frontend/test-results/
+/frontend/playwright-report/
+
+# Python and virtual environments
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local environment configuration
+.env
+.env.*
+!.env.example
+.local/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local Redis / worker runtime files
+dump.rdb
+appendonlydir/
+celerybeat-schedule*
+*.pid
+
+# Local database backup / restore artifacts
+/backups/
+*.dump
+*.backup
+*.sqlc
+
+# Terraform state/plans and operator-specific inputs (may contain secrets)
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+crash.log
+aws-deployment.json
+infra/backend.hcl

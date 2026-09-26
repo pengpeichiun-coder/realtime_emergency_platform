@@ -1,0 +1,263 @@
+name: Validate
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgis/postgis:17-3.6-alpine@sha256:a8ffa9afeea4ad6eada171fa2afdb57cd3eb90f92ce20156aa2cb8411d70e0cd
+        env:
+          POSTGRES_DB: emergency_platform
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ['5432:5432']
+      redis:
+        image: redis:8.2-alpine
+        ports: ['6379:6379']
+    env:
+      DATABASE_URL: postgresql+asyncpg://postgres@localhost/emergency_platform
+      TEST_DATABASE_URL: postgresql+asyncpg://postgres@localhost/emergency_platform_test
+      REDIS_URL: redis://localhost:6379/0
+      APP_ENV: test
+      ALLOWED_HOSTS: testserver,localhost,127.0.0.1
+      ALLOWED_ORIGINS: http://testserver,http://localhost:5173,http://127.0.0.1:5173
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: 'backend/requirements*.txt'
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pip check
+      - name: Wait for PostgreSQL and Redis services
+        run: |
+          python - <<'PY'
+          import asyncio
+          import os
+          import redis
+          import asyncpg
+
+          async def wait_for_services():
+              database_url = os.environ["DATABASE_URL"].replace(
+                  "postgresql+asyncpg://", "postgresql://", 1
+              )
+              cache = redis.Redis.from_url(
+                  os.environ["REDIS_URL"], socket_connect_timeout=1
+              )
+              postgres_error = "not checked"
+              redis_error = "not checked"
+              for attempt in range(60):
+                  postgres_ready = False
+                  redis_ready = False
+                  try:
+                      connection = await asyncpg.connect(database_url, timeout=1)
+                      await connection.close()
+                      postgres_ready = True
+                  except Exception as error:
+                      postgres_error = type(error).__name__
+                  try:
+                      redis_ready = bool(cache.ping())
+                  except Exception as error:
+                      redis_error = type(error).__name__
+                  if postgres_ready and redis_ready:
+                      cache.close()
+                      return
+                  if attempt < 59:
+                      await asyncio.sleep(1)
+              cache.close()
+              raise RuntimeError(
+                  "Timed out waiting for PostgreSQL and Redis services "
+                  f"(PostgreSQL: {postgres_error}; Redis: {redis_error})"
+              )
+
+          asyncio.run(wait_for_services())
+          PY
+      - name: Create isolated integration database and migrate both databases
+        run: |
+          createdb -h localhost -U postgres emergency_platform_test
+          alembic upgrade head
+          DATABASE_URL="$TEST_DATABASE_URL" alembic upgrade head
+          alembic current
+          alembic heads
+      - name: Generate an ephemeral test JWT secret
+        run: |
+          jwt_secret="$(python -c 'import secrets; print(secrets.token_hex(32))')"
+          echo "::add-mask::${jwt_secret}"
+          echo "JWT_SECRET=${jwt_secret}" >> "$GITHUB_ENV"
+      - run: python -m pytest -q --junitxml=/tmp/backend-tests.xml
+      - run: python -m pytest -q -m postgres --junitxml=/tmp/postgres-tests.xml
+      - name: Reject skipped database tests
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse('/tmp/postgres-tests.xml').getroot()
+          assert sum(int(s.get('tests', 0)) for s in root.iter('testsuite')) > 0
+          assert not root.findall('.//skipped'), 'PostgreSQL tests must execute in CI'
+          PY
+  workflow-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+      - run: '"$(go env GOPATH)/bin/actionlint"'
+  containers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.14'
+          cache: pip
+          cache-dependency-path: 'backend/requirements*.txt'
+      - run: python -m pip install -r backend/requirements-dev.txt
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: frontend
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: infra/postgis
+          load: true
+          tags: emergency-platform-postgis:local
+          cache-from: type=gha,scope=postgis
+          cache-to: type=gha,mode=max,scope=postgis
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: backend
+          load: true
+          tags: emergency-platform-backend:local
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: frontend
+          load: true
+          tags: emergency-platform-frontend:local
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+      - name: Start complete stack with isolated generated secrets
+        run: |
+          python scripts/init_local_env.py
+          echo 'WEBHOOK_ALLOWED_LOOPBACK_ORIGINS=http://127.0.0.1:8765' >> .env
+          docker compose -f compose.yaml -f compose.e2e.yaml --profile distributed up -d --no-build
+          python scripts/compose_smoke.py
+      - name: Real Redis-backed worker and multi-instance smoke
+        run: |
+          docker compose --profile tools run --rm seed
+          python scripts/system_smoke.py
+          python scripts/distributed_smoke.py
+          python scripts/container_webhook_smoke.py
+      - name: Chromium E2E against real Compose services
+        env:
+          E2E_BASE_URL: http://127.0.0.1:8080
+          E2E_API2_URL: http://127.0.0.1:8002
+          E2E_COMPOSE_ROOT: ${{ github.workspace }}
+          E2E_COMPOSE_PROJECT: emergency-platform
+          E2E_ADMIN_EMAIL: admin@demo.example.com
+          E2E_DEMO_PASSWORD: Demo-Only-Response-2026!
+        run: npm --prefix frontend run test:e2e
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0
+          cache: true
+      - name: Scan application images (all findings retained; fixable high/critical gate)
+        run: bash scripts/scan_images.sh
+      - name: Smoke-test release SBOM generation on both built images
+        run: |
+          python scripts/generate_image_sbom.py emergency-platform-backend:local /tmp/maintenance-sbom/backend.cdx.json
+          python scripts/generate_image_sbom.py emergency-platform-frontend:local /tmp/maintenance-sbom/frontend.cdx.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: maintenance-image-sboms
+          path: /tmp/maintenance-sbom/*.cdx.json
+          retention-days: 14
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: container-security-reports
+          path: /tmp/emergency-security/*.json
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Stop this isolated runner stack
+        if: always()
+        run: docker compose --profile distributed down --timeout 35
+  infrastructure:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Download verified Prometheus validation tool
+        run: |
+          curl --fail --location --retry 2 --max-time 180 \
+            --output "$RUNNER_TEMP/prometheus.tar.gz" \
+            https://github.com/prometheus/prometheus/releases/download/v3.15.0/prometheus-3.15.0.linux-amd64.tar.gz
+          echo "2a542df32eac02ee17b9d844fb2aa1de00dafa5476579ba8a3ba862e9d572ea0  $RUNNER_TEMP/prometheus.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/prometheus.tar.gz" -C "$RUNNER_TEMP" prometheus-3.15.0.linux-amd64/promtool
+      - name: Validate local monitoring and alert routing configuration
+        run: |
+          curl --fail --location --retry 2 --max-time 180 \
+            --output "$RUNNER_TEMP/alertmanager.tar.gz" \
+            https://github.com/prometheus/alertmanager/releases/download/v0.34.1/alertmanager-0.34.1.linux-amd64.tar.gz
+          echo "265b9d1e55ef0d5306a436018af6d2b686c2ce051f03d968f7464ecb1372a7e8  $RUNNER_TEMP/alertmanager.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/alertmanager.tar.gz" -C "$RUNNER_TEMP" alertmanager-0.34.1.linux-amd64/amtool
+          make monitoring-validate PROMTOOL="$RUNNER_TEMP/prometheus-3.15.0.linux-amd64/promtool" AMTOOL="$RUNNER_TEMP/alertmanager-0.34.1.linux-amd64/amtool"
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+        with:
+          terraform_version: '1.15.8'
+      - run: terraform -chdir=infra fmt -check -recursive
+      - run: terraform -chdir=infra init -backend=false -input=false
+      - run: terraform -chdir=infra validate
+      - run: terraform -chdir=infra test
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: v0.74.0
+          cache: true
+      - name: Report infrastructure misconfigurations without suppressing intentional edges
+        run: |
+          mkdir -p /tmp/emergency-iac
+          trivy config --severity HIGH,CRITICAL --exit-code 0 --format json --output /tmp/emergency-iac/terraform.json infra
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: infrastructure-security-report
+          path: /tmp/emergency-iac/*.json
+          retention-days: 14
+          if-no-files-found: warn

@@ -1,0 +1,22 @@
+title = "Emergency platform secret scanning"
+
+[extend]
+useDefault = true
+
+# Reviewed non-secrets, constrained to one rule, path, and exact matched content.
+# Keep real values on neighboring lines subject to the default scanner rules.
+[[allowlists]]
+description = "Refresh-token schema prose, not a credential"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''(^|/)docs/architecture\.md$''']
+regexTarget = "match"
+regexes = ['''^token hash, expiry/revocation/creation$''']
+
+[[allowlists]]
+description = "ECS secret-key name mapping, not a password value"
+targetRules = ["hashicorp-tf-password"]
+condition = "AND"
+paths = ['''(^|/)infra/ecs\.tf$''']
+regexTarget = "line"
+regexes = ['''^\s*RDS_PASSWORD\s*=\s*"RDS_PASSWORD"\s*$''']
