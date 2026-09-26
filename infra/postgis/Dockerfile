@@ -13,7 +13,7 @@ RUN apk add --no-cache git ca-certificates \
          cp /go/bin/gosu /out/gosu; \
        fi
 
-FROM postgis/postgis:17-3.6-alpine@sha256:a8ffa9afeea4ad6eada171fa2afdb57cd3eb90f92ce20156aa2cb8411d70e0cd
+FROM postgis/postgis:18-3.6-alpine@sha256:ffcf0c4b904e41b9779f8098007fb5a9484025319c18c70cf8e1bcebb742b9b7
 
 USER root
 
