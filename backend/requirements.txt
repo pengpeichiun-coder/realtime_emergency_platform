@@ -7,13 +7,13 @@ h11==0.16.0
 idna==3.20
 pydantic==2.13.5
 # Pydantic pins its core exactly; upgrade this pair together after resolution.
-pydantic_core==2.46.5
+pydantic_core==2.49.0
 starlette==1.7.0
 typing-inspection==0.4.4
 typing_extensions==4.16.0
-uvicorn==0.53.0
+uvicorn==0.54.0
 websockets==17.1
-SQLAlchemy==2.0.54
+SQLAlchemy==2.1.1
 asyncpg==0.31.0
 GeoAlchemy2==0.20.0
 alembic==1.20.0
@@ -24,7 +24,7 @@ numpy==2.5.3
 Mako==1.4.3
 MarkupSafe==3.0.3
 packaging==26.3
-PyJWT==2.14.0
+PyJWT==2.15.0
 argon2-cffi==25.1.0
 email-validator==2.3.0
 argon2-cffi-bindings==26.1.0
@@ -45,7 +45,7 @@ six==1.17.0
 tzdata==2026.4
 tzlocal==5.4.4
 vine==5.1.0
-wcwidth==0.8.4
+wcwidth==0.9.1
 
 # Authenticated webhook encryption and DNS-pinned HTTP delivery
 cryptography==50.0.1
