@@ -1,9 +1,9 @@
 -r requirements.txt
 pytest==9.1.1
-httpx2==2.13.1
-httpcore2==2.13.1
-truststore==0.10.4
-iniconfig==2.3.0
-pluggy==1.6.0
+httpx2==2.16.0
+httpcore2==2.16.0
+truststore==0.10.5
+iniconfig==2.3.1
+pluggy==1.7.0
 pygments==2.21.0
 PyYAML==6.0.3
